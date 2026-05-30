@@ -22,25 +22,39 @@ def left_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         r_prev, n_k, r_next = backend.shape(core)
         
         matrix = backend.reshape(core, (r_prev * n_k, r_next))
+        m, n = backend.shape(matrix)
         
-        # Используем SVD вместо QR для работы с любыми (даже широкими) матрицами
-        U, S, Vt = backend.svd(matrix, full_matrices=False)
-        r_new = backend.shape(S)[0]
-        
-        # Q = U
-        cores[k] = backend.reshape(U, (r_prev, n_k, r_new))
-        
-        # R = diag(S) @ Vt
-        R = _multiply_diag_matrix(S, Vt, r_new, backend)
-        
-        next_core = cores[k + 1]
-        _, n_next, r_next_next = backend.shape(next_core)
-        
-        next_matrix = backend.reshape(next_core, (r_next, n_next * r_next_next))
-        new_next_matrix = backend.matmul(R, next_matrix)
-        
-        cores[k + 1] = backend.reshape(new_next_matrix, (r_new, n_next, r_next_next))
-        
+        # Гибридный подход: если форма позволяет, делаем строгое QR (для тестов canonical_form),
+        # если ранг раздут и матрица широкая — спасаемся через SVD (для tt_round).
+        if m >= n:
+            Q, R = backend.qr(matrix)
+            r_new = n
+            
+            cores[k] = backend.reshape(Q, (r_prev, n_k, r_new))
+            
+            next_core = cores[k + 1]
+            _, n_next, r_next_next = backend.shape(next_core)
+            
+            next_matrix = backend.reshape(next_core, (r_next, n_next * r_next_next))
+            new_next_matrix = backend.matmul(R, next_matrix)
+            
+            cores[k + 1] = backend.reshape(new_next_matrix, (r_new, n_next, r_next_next))
+        else:
+            U, S, Vt = backend.svd(matrix, full_matrices=False)
+            r_new = backend.shape(S)[0]
+            
+            cores[k] = backend.reshape(U, (r_prev, n_k, r_new))
+            
+            R = _multiply_diag_matrix(S, Vt, r_new, backend)
+            
+            next_core = cores[k + 1]
+            _, n_next, r_next_next = backend.shape(next_core)
+            
+            next_matrix = backend.reshape(next_core, (r_next, n_next * r_next_next))
+            new_next_matrix = backend.matmul(R, next_matrix)
+            
+            cores[k + 1] = backend.reshape(new_next_matrix, (r_new, n_next, r_next_next))
+            
     return TTTensor(cores)
 
 
@@ -56,25 +70,42 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         r_prev, n_k, r_next = backend.shape(core)
         
         matrix = backend.reshape(core, (r_prev, n_k * r_next))
+        matrix_t = backend.transpose(matrix)
+        m, n = backend.shape(matrix_t)
         
-        # Используем SVD вместо проблемного RQ
-        U, S, Vt = backend.svd(matrix, full_matrices=False)
-        r_new = backend.shape(S)[0]
-        
-        # Q = Vt
-        cores[k] = backend.reshape(Vt, (r_new, n_k, r_next))
-        
-        # R = U @ diag(S)
-        R = _multiply_columns_by_diag(U, S, backend)
-        
-        prev_core = cores[k - 1]
-        r_prev_prev, n_prev, _ = backend.shape(prev_core)
-        
-        prev_matrix = backend.reshape(prev_core, (r_prev_prev * n_prev, r_prev))
-        new_prev_matrix = backend.matmul(prev_matrix, R)
-        
-        cores[k - 1] = backend.reshape(new_prev_matrix, (r_prev_prev, n_prev, r_new))
-        
+        if m >= n:
+            Q, R = backend.qr(matrix_t)
+            Q_t = backend.transpose(Q)
+            R_t = backend.transpose(R)
+            r_new = n
+            
+            cores[k] = backend.reshape(Q_t, (r_new, n_k, r_next))
+            
+            prev_core = cores[k - 1]
+            r_prev_prev, n_prev, _ = backend.shape(prev_core)
+            
+            prev_matrix = backend.reshape(prev_core, (r_prev_prev * n_prev, r_prev))
+            new_prev_matrix = backend.matmul(prev_matrix, R_t)
+            
+            cores[k - 1] = backend.reshape(new_prev_matrix, (r_prev_prev, n_prev, r_new))
+        else:
+            # Матрица раздута. Безопасно применяем SVD к высокой исходной матрице.
+            U, S, Vt = backend.svd(matrix, full_matrices=False)
+            r_new = backend.shape(S)[0]
+            
+            Q_new = Vt
+            R_new = _multiply_columns_by_diag(U, S, backend)
+            
+            cores[k] = backend.reshape(Q_new, (r_new, n_k, r_next))
+            
+            prev_core = cores[k - 1]
+            r_prev_prev, n_prev, _ = backend.shape(prev_core)
+            
+            prev_matrix = backend.reshape(prev_core, (r_prev_prev * n_prev, r_prev))
+            new_prev_matrix = backend.matmul(prev_matrix, R_new)
+            
+            cores[k - 1] = backend.reshape(new_prev_matrix, (r_prev_prev, n_prev, r_new))
+            
     return TTTensor(cores)
 
 
@@ -87,12 +118,9 @@ def _numerical_rank(
     rel_tol: float = 1e-8,
     abs_tol: float = 1e-12
 ) -> int:
-    """
-    Возвращает числовой ранг матрицы по вектору сингулярных значений.
-    """
+    """Возвращает числовой ранг матрицы по вектору сингулярных значений."""
     if S.size == 0:
         return 0
-    
     s_max = S[0]
     threshold = max(abs_tol, rel_tol * s_max)
     r = 0
