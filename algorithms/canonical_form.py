@@ -21,25 +21,25 @@ def left_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         core = cores[k]
         r_prev, n_k, r_next = backend.shape(core)
         
-        # 1. Разворачиваем ядро в матрицу: (r_{k-1} * n_k) x r_k
         matrix = backend.reshape(core, (r_prev * n_k, r_next))
         
-        # 2. Выполняем QR-разложение
-        Q, R = backend.qr(matrix)
+        # Используем SVD вместо QR для работы с любыми (даже широкими) матрицами
+        U, S, Vt = backend.svd(matrix, full_matrices=False)
+        r_new = backend.shape(S)[0]
         
-        # 3. Сворачиваем Q обратно в левоортогональное ядро
-        cores[k] = backend.reshape(Q, (r_prev, n_k, r_next))
+        # Q = U
+        cores[k] = backend.reshape(U, (r_prev, n_k, r_new))
         
-        # 4. Поглощаем матрицу R в следующее ядро G_{k+1}
+        # R = diag(S) @ Vt
+        R = _multiply_diag_matrix(S, Vt, r_new, backend)
+        
         next_core = cores[k + 1]
         _, n_next, r_next_next = backend.shape(next_core)
         
-        # Для матричного умножения разворачиваем следующее ядро по первой моде
         next_matrix = backend.reshape(next_core, (r_next, n_next * r_next_next))
         new_next_matrix = backend.matmul(R, next_matrix)
         
-        # Сворачиваем обратно
-        cores[k + 1] = backend.reshape(new_next_matrix, (r_next, n_next, r_next_next))
+        cores[k + 1] = backend.reshape(new_next_matrix, (r_new, n_next, r_next_next))
         
     return TTTensor(cores)
 
@@ -55,30 +55,25 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         core = cores[k]
         r_prev, n_k, r_next = backend.shape(core)
         
-        # 1. Разворачиваем ядро: r_{k-1} x (n_k * r_k)
         matrix = backend.reshape(core, (r_prev, n_k * r_next))
         
-        # 2. Выполняем RQ-разложение через QR транспонированной матрицы
-        matrix_t = backend.transpose(matrix)
-        Q, R = backend.qr(matrix_t)
+        # Используем SVD вместо проблемного RQ
+        U, S, Vt = backend.svd(matrix, full_matrices=False)
+        r_new = backend.shape(S)[0]
         
-        # matrix = R^T Q^T
-        Q_t = backend.transpose(Q)
-        R_t = backend.transpose(R)
+        # Q = Vt
+        cores[k] = backend.reshape(Vt, (r_new, n_k, r_next))
         
-        # 3. Сворачиваем Q^T обратно в правоортогональное ядро
-        cores[k] = backend.reshape(Q_t, (r_prev, n_k, r_next))
+        # R = U @ diag(S)
+        R = _multiply_columns_by_diag(U, S, backend)
         
-        # 4. Поглощаем R^T в предыдущее ядро G_{k-1}
         prev_core = cores[k - 1]
         r_prev_prev, n_prev, _ = backend.shape(prev_core)
         
-        # Разворачиваем предыдущее ядро и умножаем справа на R^T
         prev_matrix = backend.reshape(prev_core, (r_prev_prev * n_prev, r_prev))
-        new_prev_matrix = backend.matmul(prev_matrix, R_t)
+        new_prev_matrix = backend.matmul(prev_matrix, R)
         
-        # Сворачиваем обратно
-        cores[k - 1] = backend.reshape(new_prev_matrix, (r_prev_prev, n_prev, r_prev))
+        cores[k - 1] = backend.reshape(new_prev_matrix, (r_prev_prev, n_prev, r_new))
         
     return TTTensor(cores)
 

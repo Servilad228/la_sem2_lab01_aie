@@ -74,10 +74,11 @@ class DenseTensor:
         return DenseTensor(shape, data=data)
 
     @staticmethod
-    def from_nested_list(nested: list) -> DenseTensor:
+    def from_nested_list(nested: list | tuple) -> DenseTensor:
         shape = []
         curr = nested
-        while isinstance(curr, list):
+        # Добавили проверку на tuple
+        while isinstance(curr, (list, tuple)):
             shape.append(len(curr))
             if len(curr) > 0:
                 curr = curr[0]
